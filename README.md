@@ -2,6 +2,8 @@
 
 A Next.js SPA for editing DBML and visualizing database schemas as an interactive graph.
 
+> CI build-check branch used to validate install, typecheck, lint, and production build.
+
 ## Features
 
 - Open/upload `.dbml` files and edit them in Monaco.

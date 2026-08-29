@@ -123,7 +123,7 @@ function CanvasInner() {
   }, [parsed, analysis, fileName, layoutMode, search, colorByCommunity, showCross, showLabels, selectedTable, neighbors, setNodes, setEdges]);
 
   useEffect(() => { void build(false); }, [build]);
-  useEffect(() => { if (layoutNonce) void build(true); }, [layoutNonce]);
+  useEffect(() => { if (layoutNonce) void build(true); }, [layoutNonce, build]);
 
   const onNodeDragStop = useCallback((_event: unknown, node: Node) => {
     try {
@@ -170,7 +170,7 @@ function CanvasInner() {
       position="bottom-left"
       pannable
       zoomable
-      nodeColor={(n) => palette[(analysis.nodes[n.id]?.community ?? 0) % palette.length]}
+      nodeColor={(n) => palette[((analysis?.nodes[n.id]?.community ?? 0) % palette.length)]}
       maskColor="rgba(2,6,23,.72)"
       style={{ background: '#0b1220' }}
     />
