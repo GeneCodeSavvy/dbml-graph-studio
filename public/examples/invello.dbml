@@ -1,0 +1,43 @@
+Project invello_example {
+  Note: 'Compact first-run schema. Open or upload any DBML file to analyze the full schema.'
+}
+
+Table parties {
+  id text [pk]
+  legal_name text [not null]
+}
+
+Table clients {
+  id text [pk]
+  party_id text [not null, unique, ref: - parties.id]
+}
+
+Table party_relationships {
+  id text [pk]
+  from_party_id text [not null, ref: > parties.id]
+  to_party_id text [not null, ref: > parties.id]
+  association text [not null]
+}
+
+Table documents {
+  id text [pk]
+  title text [not null]
+}
+
+Table document_party_links {
+  document_id text [not null, ref: > documents.id]
+  party_id text [not null, ref: > parties.id]
+
+  Indexes {
+    (document_id, party_id) [pk]
+  }
+}
+
+Table document_party_relationship_links {
+  document_id text [not null, ref: > documents.id]
+  party_relationship_id text [not null, ref: > party_relationships.id]
+
+  Indexes {
+    (document_id, party_relationship_id) [pk]
+  }
+}
