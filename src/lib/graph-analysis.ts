@@ -1,16 +1,21 @@
 import Graph from 'graphology';
 import louvain from 'graphology-communities-louvain';
 import betweennessCentrality from 'graphology-metrics/centrality/betweenness';
-import edgeBetweennessCentrality from 'graphology-metrics/centrality/edge-betweenness';
 import pagerank from 'graphology-metrics/centrality/pagerank';
 import type { GraphAnalysis, ParsedSchema } from './types';
 
-function findArticulationAndBridges(nodes: string[], pairs: [string, string][]) {
+function buildAdjacency(nodes: string[], pairs: [string, string][]) {
   const adj = new Map(nodes.map((n) => [n, new Set<string>()]));
   for (const [a, b] of pairs) {
     if (a === b) continue;
-    adj.get(a)?.add(b); adj.get(b)?.add(a);
+    adj.get(a)?.add(b);
+    adj.get(b)?.add(a);
   }
+  return adj;
+}
+
+function findArticulationAndBridges(nodes: string[], pairs: [string, string][]) {
+  const adj = buildAdjacency(nodes, pairs);
   let time = 0;
   const disc = new Map<string, number>();
   const low = new Map<string, number>();
@@ -19,12 +24,17 @@ function findArticulationAndBridges(nodes: string[], pairs: [string, string][]) 
   const bridges: [string, string][] = [];
 
   const dfs = (u: string) => {
-    disc.set(u, ++time); low.set(u, time);
+    disc.set(u, ++time);
+    low.set(u, time);
     let children = 0;
+
     for (const v of adj.get(u) ?? []) {
       if (!disc.has(v)) {
-        children++; parent.set(v, u); dfs(v);
+        children++;
+        parent.set(v, u);
+        dfs(v);
         low.set(u, Math.min(low.get(u)!, low.get(v)!));
+
         if (parent.get(u) == null && children > 1) articulation.add(u);
         if (parent.get(u) != null && low.get(v)! >= disc.get(u)!) articulation.add(u);
         if (low.get(v)! > disc.get(u)!) bridges.push([u, v]);
@@ -34,38 +44,90 @@ function findArticulationAndBridges(nodes: string[], pairs: [string, string][]) 
     }
   };
 
-  for (const n of nodes) if (!disc.has(n)) { parent.set(n, null); dfs(n); }
+  for (const n of nodes) {
+    if (!disc.has(n)) {
+      parent.set(n, null);
+      dfs(n);
+    }
+  }
+
   return { articulation, bridges };
 }
 
+function bridgeImpactScore(source: string, target: string, nodes: string[], pairs: [string, string][]) {
+  const adj = buildAdjacency(nodes, pairs);
+
+  const countReachable = (start: string) => {
+    const seen = new Set<string>([start]);
+    const queue = [start];
+
+    while (queue.length) {
+      const current = queue.shift()!;
+      for (const next of adj.get(current) ?? []) {
+        const isRemovedBridge =
+          (current === source && next === target) ||
+          (current === target && next === source);
+        if (isRemovedBridge || seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+
+    return seen.size;
+  };
+
+  const left = countReachable(source);
+  const right = countReachable(target);
+  return left * right;
+}
+
 export function analyzeSchema(schema: ParsedSchema): GraphAnalysis {
-  const graph = new Graph({ type: 'undirected', multi: false, allowSelfLoops: true });
+  // Graph analysis intentionally uses a simple table-to-table projection.
+  // Self-referential FKs still render in the ER diagram, but they add no
+  // connectivity between tables and can destabilize/distort graph metrics.
+  const graph = new Graph({ type: 'undirected', multi: false, allowSelfLoops: false });
   for (const table of schema.tables) graph.addNode(table.id);
+
   for (const rel of schema.relations) {
     if (!graph.hasNode(rel.sourceTable) || !graph.hasNode(rel.targetTable)) continue;
+    if (rel.sourceTable === rel.targetTable) continue;
     graph.mergeUndirectedEdge(rel.sourceTable, rel.targetTable);
   }
-
-  const communityMap = graph.order ? louvain(graph, { getEdgeWeight: null }) : {} as Record<string, number>;
-  const between = graph.order ? betweennessCentrality(graph, { getEdgeWeight: null }) : {};
-  const ranks = graph.order ? pagerank(graph, { getEdgeWeight: null }) : {};
-  const edgeBetween = graph.size ? edgeBetweennessCentrality(graph, { getEdgeWeight: null }) : {};
 
   const pairSet = new Set<string>();
   const pairs: [string, string][] = [];
   for (const rel of schema.relations) {
+    if (rel.sourceTable === rel.targetTable) continue;
+    if (!graph.hasNode(rel.sourceTable) || !graph.hasNode(rel.targetTable)) continue;
+
     const [a, b] = [rel.sourceTable, rel.targetTable].sort();
     const key = `${a}\u0000${b}`;
-    if (!pairSet.has(key)) { pairSet.add(key); pairs.push([a, b]); }
+    if (!pairSet.has(key)) {
+      pairSet.add(key);
+      pairs.push([a, b]);
+    }
   }
-  const structural = findArticulationAndBridges(schema.tables.map((t) => t.id), pairs);
 
-  const ids = [...new Set(Object.values(communityMap as Record<string, number>))].sort((a, b) => a - b);
+  const tableIds = schema.tables.map((t) => t.id);
+  const structural = findArticulationAndBridges(tableIds, pairs);
+
+  const communityMap: Record<string, number> = graph.size
+    ? louvain(graph, { getEdgeWeight: null })
+    : Object.fromEntries(tableIds.map((id, index) => [id, index]));
+
+  const between = graph.order ? betweennessCentrality(graph, { getEdgeWeight: null }) : {};
+  const ranks = graph.order ? pagerank(graph, { getEdgeWeight: null }) : {};
+
+  const ids = [...new Set(Object.values(communityMap))].sort((a, b) => a - b);
   const remap = new Map(ids.map((id, i) => [id, i]));
-  const communities = ids.map((id, i) => ({
-    id: i,
-    tables: schema.tables.map((t) => t.id).filter((t) => (communityMap as any)[t] === id).sort(),
-  })).sort((a, b) => b.tables.length - a.tables.length).map((c, i) => ({ ...c, id: i }));
+  const communities = ids
+    .map((id, i) => ({
+      id: i,
+      tables: schema.tables.map((t) => t.id).filter((t) => communityMap[t] === id).sort(),
+    }))
+    .sort((a, b) => b.tables.length - a.tables.length)
+    .map((c, i) => ({ ...c, id: i }));
+
   const finalCommunity = new Map<string, number>();
   communities.forEach((c) => c.tables.forEach((t) => finalCommunity.set(t, c.id)));
 
@@ -80,26 +142,31 @@ export function analyzeSchema(schema: ParsedSchema): GraphAnalysis {
   for (const t of schema.tables) {
     nodes[t.id] = {
       id: t.id,
-      community: finalCommunity.get(t.id) ?? remap.get((communityMap as any)[t.id]) ?? 0,
+      community: finalCommunity.get(t.id) ?? remap.get(communityMap[t.id]) ?? 0,
       degree: graph.degree(t.id),
       inbound: inbound.get(t.id) ?? 0,
       outbound: outbound.get(t.id) ?? 0,
-      betweenness: Number((between as any)[t.id] ?? 0),
-      pagerank: Number((ranks as any)[t.id] ?? 0),
+      betweenness: Number((between as Record<string, number>)[t.id] ?? 0),
+      pagerank: Number((ranks as Record<string, number>)[t.id] ?? 0),
       articulation: structural.articulation.has(t.id),
     };
   }
 
-  const topHubs = Object.values(nodes).sort((a, b) => b.betweenness - a.betweenness || b.degree - a.degree).slice(0, 12);
+  const topHubs = Object.values(nodes)
+    .sort((a, b) => b.betweenness - a.betweenness || b.degree - a.degree)
+    .slice(0, 12);
 
-  // Iterate Graphology's actual edge keys rather than trusting arbitrary keys
-  // from the metric result object. This guarantees source()/target() only receive
-  // valid edges, and avoids runtime failures such as extremities("undefined").
-  const topBridgeEdges = graph.edges().map((edge) => ({
-    source: graph.source(edge),
-    target: graph.target(edge),
-    score: Number((edgeBetween as Record<string, number>)[edge] ?? 0),
-  })).sort((a, b) => b.score - a.score).slice(0, 12);
+  // Rank only true structural bridges. For a bridge, removing the edge splits
+  // its connected component into two sides; |left| * |right| is the number of
+  // table pairs whose connectivity depends on that bridge.
+  const topBridgeEdges = structural.bridges
+    .map(([source, target]) => ({
+      source,
+      target,
+      score: bridgeImpactScore(source, target, tableIds, pairs),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
 
   return { nodes, communities, bridgePairs: structural.bridges, topHubs, topBridgeEdges };
 }
