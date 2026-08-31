@@ -91,10 +91,15 @@ export function analyzeSchema(schema: ParsedSchema): GraphAnalysis {
   }
 
   const topHubs = Object.values(nodes).sort((a, b) => b.betweenness - a.betweenness || b.degree - a.degree).slice(0, 12);
-  const topBridgeEdges = Object.entries(edgeBetween as Record<string, number>).map(([edge, score]) => {
-    const [source, target] = graph.extremities(edge);
-    return { source, target, score };
-  }).sort((a, b) => b.score - a.score).slice(0, 12);
+
+  // Iterate Graphology's actual edge keys rather than trusting arbitrary keys
+  // from the metric result object. This guarantees source()/target() only receive
+  // valid edges, and avoids runtime failures such as extremities("undefined").
+  const topBridgeEdges = graph.edges().map((edge) => ({
+    source: graph.source(edge),
+    target: graph.target(edge),
+    score: Number((edgeBetween as Record<string, number>)[edge] ?? 0),
+  })).sort((a, b) => b.score - a.score).slice(0, 12);
 
   return { nodes, communities, bridgePairs: structural.bridges, topHubs, topBridgeEdges };
 }
